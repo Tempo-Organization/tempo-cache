@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Mythical-Github", email = "67753356+Mythical-Github@users.noreply.github.com" }
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "platformdirs>=4.9.6",
     "requests>=2.33.1",
