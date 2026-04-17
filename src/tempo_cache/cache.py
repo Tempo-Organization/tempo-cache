@@ -2,33 +2,38 @@ import os
 import sys
 import socket
 import shutil
+import typing
 import zipfile
 import tarfile
+import pathlib
 import platform
-from pathlib import Path
-from typing import Callable
-from dataclasses import dataclass
 from urllib.parse import urlparse
+from dataclasses import dataclass, field
 
 import requests
 import platformdirs
 from tomlkit.toml_document import TOMLDocument
 from tomlkit import table, document, dumps, loads
 
+from tempo_settings.tempo_settings import SettingsInformation
+
 
 # override this with another script directory if desired
 SCRIPT_DIR = (
-    Path(sys.executable).parent
+    pathlib.Path(sys.executable).parent
     if getattr(sys, "frozen", False)
-    else Path(__file__).resolve().parent
+    else pathlib.Path(__file__).resolve().parent
 )
 
 # override this for when you want to have it specifiable via config
 _cache_dir: str | None = None
 # override this with a function that takes in a string to replace the print out messages
-logging_function: Callable = print
+logging_function: typing.Callable = print
 has_inited: bool = False
 is_online: bool = False
+# set this to an instance of yours, assume is only read at program start, and not modified mid run
+# it is mainly for config settings overrides
+settings_information: SettingsInformation
 
 
 def set_cache_dir_from_tempo_config_file(path: str | None) -> None:
@@ -96,6 +101,112 @@ def init_is_online(timeout: float = 1):
 
     has_inited = True
     return is_online
+
+
+def is_current_preferred_tool_version_installed(tool_name: str) -> bool:
+    # this doesn't check the tag like it should
+    # Check if the jmap tool is present in the cache and has a valid version
+    for tool in TempoCache.tool_entries:
+        if tool.get_repo_name().lower() == tool_name:
+            for entry in tool.cache_entries:
+                if entry.is_cache_valid():
+                    return True
+    return False
+
+
+@dataclass
+class ToolInfo:
+    tool_name: str
+    repo_name: str
+    repo_owner: str
+    file_paths: list[str] = field(default_factory=list)
+    is_online: bool = field(default_factory=lambda: init_is_online())
+
+
+    def get_file_to_download(self) -> str:
+        if is_windows():
+            return f'{self.tool_name}-x86_64-pc-windows-msvc.zip'
+        elif is_linux():
+            return f'{self.tool_name}-x86_64-unknown-linux-gnu.tar.xz'
+        else:
+            raise ValueError('Unsupported OS')
+
+
+    def get_download_url(self) -> str:
+        return f'https://github.com/{self.repo_owner}/{self.repo_name}/releases/download/{self.get_current_preferred_release_tag()}/{self.get_file_to_download()}'
+
+
+    def get_executable_name(self) -> str:
+        if is_windows():
+            return f'{self.tool_name}.exe'
+        elif is_linux():
+            return f'{self.tool_name}'
+        else:
+            raise ValueError('Unsupported OS')
+
+
+    def get_executable_path(self) -> str:
+        return os.path.normpath(f'{str(self.get_tool_directory())}/{self.get_executable_name()}')
+
+
+    def get_current_preferred_release_tag(self) -> str:
+            default_value = "latest"
+            config_value = None
+
+            if settings_information.settings:
+                config_value = settings_information.settings.get(f'{self.tool_name.lower()}_info', {}).get(f'{self.tool_name.lower()}_release_tag')
+
+            env_value = os.environ.get(f'TEMPO_{self.tool_name.upper()}_RELEASE_TAG')
+
+            cli_value = None
+            if f'--{self.tool_name.lower()}-release-tag' in sys.argv:
+                idx = sys.argv.index(f'--{self.tool_name.lower()}-release-tag')
+                if idx + 1 < len(sys.argv):
+                    cli_value = sys.argv[idx + 1]
+                else:
+                    raise RuntimeError(f'You passed --{self.tool_name.lower()}-release-tag without a tag after it.')
+
+            prioritized_value = cli_value or env_value or config_value or default_value
+
+            if prioritized_value == "latest":
+                try:
+                    response = requests.get(f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases/latest", timeout=5)
+                    response.raise_for_status()
+                    return response.json().get("tag_name", "latest")
+                except Exception as e:
+                    logging_function(f"[Warning] Failed to fetch latest {self.tool_name.lower()} release tag from GitHub: {e}")
+                    return "latest"
+
+            return prioritized_value
+
+
+    def get_tool_directory(self) -> pathlib.Path:
+        global settings_information
+        default_value = get_tool_install_dir(self.tool_name.lower(), self.get_current_preferred_release_tag())
+
+        config_value = None
+        if settings_information.settings:
+            config_value = settings_information.settings.get(f"{self.tool_name.lower()}_info", {}).get(
+                f"{self.tool_name.lower()}_dir", None
+            )
+
+        env_value = os.environ.get(f"TEMPO_{self.tool_name.upper()}_DIR")
+
+        cli_value = None
+        if f"--{self.tool_name.lower()}-dir" in sys.argv:
+            idx = sys.argv.index(f"--{self.tool_name.lower()}-dir")
+            if idx + 1 < len(sys.argv):
+                cli_value = sys.argv[idx + 1]
+            else:
+                raise RuntimeError(f"you passed --{self.tool_name.lower()}-dir without a tag after")
+
+        prioritized_value = cli_value or env_value or config_value or default_value
+
+        if not os.path.isabs(prioritized_value):
+            return pathlib.Path(str(settings_information.settings_json_dir.path), prioritized_value).resolve()
+        else:
+            return pathlib.Path(prioritized_value).resolve()
+
 
 @dataclass
 class CacheEntry:
@@ -280,19 +391,18 @@ def get_tool_install_dir(tool_name: str, version_tag: str) -> str:
 
 def install_tool_to_cache(
         tools: Tools,
-        tool_name: str,
-        version_tag: str,
-        file_paths: list[str],
-        executable_path: str,
-        file_to_download: str,
-        download_url: str,
-        is_online: bool = init_is_online()
+        tool_info: ToolInfo
     ):
     if not is_online:
         raise RuntimeError('You are not able to download tools to install to the cache when not connected to the web.')
 
+    download_url = tool_info.get_download_url()
+    file_to_download = tool_info.get_file_to_download()
+    executable_path = tool_info.get_executable_path()
+    version_tag = tool_info.get_current_preferred_release_tag()
+
     # Download if missing
-    if not os.path.isfile(file_to_download):
+    if not os.path.isfile(tool_info.get_file_to_download()):
         try:
             logging_function(f"Downloading {download_url} to {file_to_download}...")
             response = requests.get(download_url, stream=True, timeout=15)
@@ -306,7 +416,7 @@ def install_tool_to_cache(
             return
 
     # Determine install directory
-    install_dir = get_tool_install_dir(tool_name, version_tag)
+    install_dir = get_tool_install_dir(tool_info.tool_name, version_tag)
     os.makedirs(install_dir, exist_ok=True)
 
     # Extract if needed
@@ -332,21 +442,21 @@ def install_tool_to_cache(
             logging_function(f"[Error] Failed to remove archive: {e}")
     else:
         # Direct file, not archive — just move to install_dir
-        for path in file_paths:
+        for path in tool_info.file_paths:
             dest = os.path.join(install_dir, os.path.basename(path))
             shutil.copy2(path, dest)
             unpacked_files.append(dest)
 
     # Register in cache
     tool = next(
-        (t for t in tools.tool_entries if t.get_repo_name().lower() == tool_name.lower()),
+        (t for t in tools.tool_entries if t.get_repo_name().lower() == tool_info.tool_name.lower()),
         None
     )
 
     if tool is None:
-        logging_function(f"Registering new tool '{tool_name}' in cache")
+        logging_function(f"Registering new tool '{tool_info.tool_name}' in cache")
         tool = Tool(
-            tool_repo_url=f"https://github.com/Tempo-Organization/{tool_name}",
+            tool_repo_url=f"https://github.com/Tempo-Organization/{tool_info.tool_name}",
             cache_entries=[]
         )
         tools.tool_entries.append(tool)
@@ -354,10 +464,10 @@ def install_tool_to_cache(
     # Prevent duplicate installs
     for existing in tool.cache_entries:
         if existing.release_tag == version_tag and existing.is_cache_valid():
-            logging_function(f"{tool_name} {version_tag} already installed")
+            logging_function(f"{tool_info.tool_name} {version_tag} already installed")
             return
 
-    logging_function(f"Installing {tool_name} version {version_tag}...")
+    logging_function(f"Installing {tool_info.tool_name} version {version_tag}...")
 
     entry = CacheEntry(
         release_tag=version_tag,

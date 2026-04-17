@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "platformdirs>=4.9.6",
     "requests>=2.33.1",
+    "tempo-settings",
     "tomlkit>=0.14.0",
 ]
 
@@ -19,3 +20,6 @@ tempo-cache = "tempo_cache:main"
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv.sources]
+tempo-settings = { git = "https://www.github.com/Tempo-Organization/tempo-settings" }
