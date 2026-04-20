@@ -23,3 +23,29 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 tempo-settings = { git = "https://www.github.com/Tempo-Organization/tempo-settings" }
+
+[tool.ruff.lint]
+select = [
+    "ANN",
+    "PTH",
+    "N",
+    "BLE",
+    "YTT",
+    "ASYNC",
+    "B",
+    "A",
+    "COM",
+    "C4",
+    "EXE",
+    "FA",
+    "INT",
+    "PIE",
+    "T20",
+    "PYI"
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.11",
+    "ty>=0.0.31",
+]

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import sys
 import socket
@@ -5,8 +6,8 @@ import shutil
 import typing
 import zipfile
 import tarfile
-import pathlib
 import platform
+from pathlib import Path
 from urllib.parse import urlparse
 from dataclasses import dataclass, field
 
@@ -20,13 +21,13 @@ from tempo_settings.tempo_settings import SettingsInformation
 
 # override this with another script directory if desired
 SCRIPT_DIR = (
-    pathlib.Path(sys.executable).parent
+    Path(sys.executable).parent
     if getattr(sys, "frozen", False)
-    else pathlib.Path(__file__).resolve().parent
+    else Path(__file__).resolve().parent
 )
 
 # override this for when you want to have it specifiable via config
-_cache_dir: str | None = None
+_cache_dir: Path | None = None
 # override this with a function that takes in a string to replace the print out messages
 logging_function: typing.Callable = print
 has_inited: bool = False
@@ -36,23 +37,23 @@ is_online: bool = False
 settings_information: SettingsInformation
 
 
-def set_cache_dir_from_tempo_config_file(path: str | None) -> None:
+def set_cache_dir_from_tempo_config_file(path: Path | None) -> None:
     global _cache_dir
     _cache_dir = path
 
-def get_cache_dir_from_tempo_config_file() -> str | None:
+def get_cache_dir_from_tempo_config_file() -> Path | None:
     return _cache_dir
 
 
-def is_windows():
+def is_windows() -> bool:
     return platform.system() == "Windows"
 
 
-def is_linux():
+def is_linux() -> bool:
     return platform.system() == "Linux"
 
 
-def log_online_status():
+def log_online_status() -> None:
     if is_online:
         logging_function('Web Connectivity Status: Online')
     else:
@@ -63,7 +64,7 @@ def _env_true(value: str | None) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def init_is_online(timeout: float = 1):
+def init_is_online(timeout: float = 1) -> bool:
     """
     Determine online status with the following priority:
     1. TEMPO_CACHE_FORCE_ONLINE=true  -> always online
@@ -104,6 +105,8 @@ def init_is_online(timeout: float = 1):
 
 
 def is_current_preferred_tool_version_installed(tool_name: str) -> bool:
+    if not isinstance(TempoCache, Tools):
+        raise RuntimeError('Tempo cache seems to not have been inited, is not an instance of Tools')
     for tool in TempoCache.tool_entries:
         if tool.get_repo_name().lower() == tool_name:
             for entry in tool.cache_entries:
@@ -117,10 +120,10 @@ class ToolInfo:
     tool_name: str
     repo_name: str
     repo_owner: str
-    file_paths: list[str] = field(default_factory=list)
+    file_paths: list[Path] = field(default_factory=list)
     is_online: bool = field(default_factory=lambda: init_is_online())
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         global TempoCache
 
         if not isinstance(TempoCache, Tools):
@@ -152,9 +155,8 @@ class ToolInfo:
             raise ValueError('Unsupported OS')
 
 
-    # maybe when this is called the installation/check for valid wanted version in cache should occur?
-    def get_executable_path(self) -> str:
-        return os.path.normpath(f'{str(self.get_tool_directory())}/{self.get_executable_name()}')
+    def get_executable_path(self) -> Path:
+        return Path(self.get_tool_directory() / self.get_executable_name())
 
 
     def get_current_preferred_release_tag(self) -> str:
@@ -178,25 +180,22 @@ class ToolInfo:
         prioritized_value = cli_value or env_value or config_value or default_value
 
         if prioritized_value == "latest":
-            try:
-                response = requests.get(f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases/latest", timeout=5)
-                response.raise_for_status()
-                return response.json().get("tag_name", "latest")
-            except Exception as e:
-                logging_function(f"[Warning] Failed to fetch latest {self.tool_name.lower()} release tag from GitHub: {e}")
-                return "latest"
+
+            response = requests.get(f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases/latest", timeout=5)
+            response.raise_for_status()
+            return response.json().get("tag_name", "latest")
 
         return prioritized_value
 
 
-    def get_tool_directory(self) -> pathlib.Path:
+    def get_tool_directory(self) -> Path | None:
         global settings_information
         default_value = get_tool_install_dir(self.tool_name.lower(), self.get_current_preferred_release_tag())
 
         config_value = None
         if settings_information.settings:
             config_value = settings_information.settings.get(f"{self.tool_name.lower()}_info", {}).get(
-                f"{self.tool_name.lower()}_dir", None
+                f"{self.tool_name.lower()}_dir", None,
             )
 
         env_value = os.environ.get(f"TEMPO_{self.tool_name.upper()}_DIR")
@@ -211,22 +210,22 @@ class ToolInfo:
 
         prioritized_value = cli_value or env_value or config_value or default_value
 
-        if not os.path.isabs(prioritized_value):
-            return pathlib.Path(str(settings_information.settings_json_dir.path), prioritized_value).resolve()
+        if not prioritized_value.is_absolute():
+            return Path(str(settings_information.settings_json_dir.path), prioritized_value).resolve()
         else:
-            return pathlib.Path(prioritized_value).resolve()
+            return Path(prioritized_value).resolve()
 
 
 @dataclass
 class CacheEntry:
     release_tag: str
-    installed_files: list[str]
-    executable_path: str
+    installed_files: list[Path]
+    executable_path: Path
     file_to_download: str
     download_url: str
 
     def is_cache_valid(self) -> bool:
-        return all(os.path.isfile(file) for file in self.installed_files)
+        return all(file.is_file() for file in self.installed_files)
 
 
 @dataclass
@@ -242,36 +241,31 @@ class Tool:
         path = urlparse(self.tool_repo_url).path.strip('/')
         return path.split('/')[1] if '/' in path else ''
 
-    def prune_tool(self, cache_directory: str):
-        valid_files = set(os.path.abspath(f) for entry in self.cache_entries for f in entry.installed_files)
+    def prune_tool(self, cache_directory: Path) -> None:
+        valid_files = {f.resolve() for entry in self.cache_entries for f in entry.installed_files}
 
-        for root, _, files in os.walk(cache_directory):
-            for file in files:
-                full_path = os.path.abspath(os.path.join(root, file))
-                if full_path not in valid_files:
-                    try:
-                        os.remove(full_path)
-                        logging_function(f"[Pruned] {full_path}")
-                    except Exception as e:
-                        logging_function(f"[Error] Could not remove {full_path}: {e}")
+        for full_path in cache_directory.rglob("*"):
+            if full_path.is_file() and full_path not in valid_files:
+                full_path.unlink()
+                logging_function(f"[Pruned] {full_path}")
 
 
 @dataclass
 class Tools:
     tool_entries: list[Tool]
 
-    def prune_all_tools(self, cache_root: str):
+    def prune_all_tools(self, cache_root: Path) -> None:
         for tool in self.tool_entries:
             repo_name = tool.get_repo_name()
-            tool_cache_dir = os.path.join(cache_root, repo_name)
-            if os.path.exists(tool_cache_dir):
+            tool_cache_dir = Path(cache_root / repo_name)
+            if tool_cache_dir.exists():
                 tool.prune_tool(tool_cache_dir)
 
-    def prune_single_tool(self, tool_name: str, cache_root: str):
+    def prune_single_tool(self, tool_name: str, cache_root: Path) -> None:
         for tool in self.tool_entries:
             if tool.get_repo_name() == tool_name:
-                tool_cache_dir = os.path.join(cache_root, tool_name)
-                if os.path.exists(tool_cache_dir):
+                tool_cache_dir = Path(cache_root / tool_name)
+                if tool_cache_dir.exists():
                     tool.prune_tool(tool_cache_dir)
                 else:
                     logging_function(f"[Warning] Cache directory does not exist: {tool_cache_dir}")
@@ -279,7 +273,7 @@ class Tools:
         logging_function(f"[Warning] Tool '{tool_name}' not found in entries.")
 
 
-    def prune_multiple_tools(self, tool_names: list[str], cache_root: str):
+    def prune_multiple_tools(self, tool_names: list[str], cache_root: Path) -> None:
         for name in tool_names:
             self.prune_single_tool(name, cache_root)
 
@@ -295,15 +289,15 @@ class Tools:
                                 "installed_files": entry.installed_files,
                                 "executable_path": entry.executable_path,
                                 "download_url": entry.download_url,
-                                "file_to_download": entry.file_to_download
+                                "file_to_download": entry.file_to_download,
                             } for entry in tool.cache_entries
-                        ]
+                        ],
                     } for tool in self.tool_entries
-                ]
+                ],
             }
 
     @staticmethod
-    def from_toml_dict(data: dict) -> 'Tools':
+    def from_toml_dict(data: dict) -> Tools:
         tools = []
         for tool_data in data.get("tool_entries", []):
             entries = [
@@ -312,7 +306,7 @@ class Tools:
                     installed_files=entry["installed_files"],
                     executable_path=entry["executable_path"],
                     download_url=entry["download_url"],
-                    file_to_download=entry["file_to_download"]
+                    file_to_download=entry["file_to_download"],
                 )
                 for entry in tool_data.get("cache_entries", [])
             ]
@@ -328,13 +322,13 @@ def list_tools(tools: Tools) -> None:
             logging_function(f"  └─ version: {entry.release_tag}")
 
 
-def prune_cache(tools: Tools, cache_root: str) -> None:
+def prune_cache(tools: Tools, cache_root: Path) -> None:
     logging_function("Pruning entire cache...")
     tools.prune_all_tools(cache_root)
     logging_function("Pruning complete.")
 
 
-def uninstall_tool_from_cache(tools: Tools, tool_name: str, version_tag: str, cache_root: str) -> None:
+def uninstall_tool_from_cache(tools: Tools, tool_name: str, version_tag: str, cache_root: Path) -> None:
     for tool in tools.tool_entries:
         if tool.get_repo_name() == tool_name:
             for entry in tool.cache_entries:
@@ -342,7 +336,7 @@ def uninstall_tool_from_cache(tools: Tools, tool_name: str, version_tag: str, ca
                     logging_function(f"Uninstalling {tool_name} version {version_tag}...")
                     for file in entry.installed_files:
                         try:
-                            os.remove(file)
+                            file.unlink()
                             logging_function(f"  Removed: {file}")
                         except FileNotFoundError:
                             logging_function(f"  Not found: {file}")
@@ -354,8 +348,8 @@ def uninstall_tool_from_cache(tools: Tools, tool_name: str, version_tag: str, ca
     logging_function(f"[Warning] Tool '{tool_name}' not found.")
 
 
-def is_archive(filename: str) -> bool:
-    return filename.endswith((
+def is_archive(filename: Path) -> bool:
+    return filename.suffix in ((
         '.zip',
         '.tar.gz',
         '.tgz',
@@ -365,19 +359,19 @@ def is_archive(filename: str) -> bool:
     ))
 
 
-def unpack_archive(archive_path: str, extract_to: str) -> list[str]:
+def unpack_archive(archive_path: Path, extract_to: Path) -> list[Path]:
     extracted_files = []
 
-    if archive_path.endswith(".zip"):
+    if archive_path.suffix == ".zip":
         with zipfile.ZipFile(archive_path, 'r') as zip_ref:
             zip_ref.extractall(extract_to)
-            extracted_files = [os.path.join(extract_to, f) for f in zip_ref.namelist()]
+            extracted_files = [Path(extract_to / f) for f in zip_ref.namelist()]
 
-    elif archive_path.endswith((".tar.gz", ".tgz", ".tar", ".tar.xz", ".txz")):
+    elif archive_path.suffix in ((".tar.gz", ".tgz", ".tar", ".tar.xz", ".txz")):
         with tarfile.open(archive_path, 'r:*') as tar_ref:
             tar_ref.extractall(extract_to)
             extracted_files = [
-                os.path.join(extract_to, member.name)
+                Path(extract_to / member.name)
                 for member in tar_ref.getmembers() if member.isfile()
             ]
 
@@ -387,47 +381,42 @@ def unpack_archive(archive_path: str, extract_to: str) -> list[str]:
     return extracted_files
 
 
-def get_tool_install_dir(tool_name: str, version_tag: str) -> str:
+def get_tool_install_dir(tool_name: str, version_tag: str) -> Path:
     if is_windows():
         platform_name = 'windows'
     elif is_linux():
         platform_name = 'linux'
     else:
         raise RuntimeError('You are on an unsupported os')
-    return os.path.normpath(os.path.join(
-        get_cache_dir(), "tools", tool_name, platform_name, version_tag
-    ))
+    return Path(get_cache_dir() / "tools" / tool_name / platform_name / version_tag)
 
 
 def install_tool_to_cache(
         tools: Tools,
-        tool_info: ToolInfo
-    ):
+        tool_info: ToolInfo,
+    ) -> None:
     if not is_online:
         raise RuntimeError('You are not able to download tools to install to the cache when not connected to the web.')
 
     download_url = tool_info.get_download_url()
-    file_to_download = tool_info.get_file_to_download()
+    file_to_download = Path(tool_info.get_file_to_download())
     executable_path = tool_info.get_executable_path()
     version_tag = tool_info.get_current_preferred_release_tag()
 
     # Download if missing
-    if not os.path.isfile(tool_info.get_file_to_download()):
-        try:
-            logging_function(f"Downloading {download_url} to {file_to_download}...")
-            response = requests.get(download_url, stream=True, timeout=15)
-            response.raise_for_status()
-            with open(file_to_download, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            logging_function("  Download complete.")
-        except Exception as e:
-            logging_function(f"[Error] Failed to download tool from {download_url}: {e}")
-            return
+    # FIXME seems to not give back a full Path and just a str that is not a full path either
+    if not file_to_download.is_file():
+        logging_function(f"Downloading {download_url} to {file_to_download}...")
+        response = requests.get(download_url, stream=True, timeout=15)
+        response.raise_for_status()
+        with Path.open(file_to_download, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        logging_function("  Download complete.")
 
     # Determine install directory
     install_dir = get_tool_install_dir(tool_info.tool_name, version_tag)
-    os.makedirs(install_dir, exist_ok=True)
+    install_dir.mkdir(parents=True)
 
     # Extract if needed
     unpacked_files = []
@@ -435,39 +424,36 @@ def install_tool_to_cache(
         unpacked_files = unpack_archive(file_to_download, install_dir)
 
         # this will need to check if the only thing in the zip root is a dir and unfolder it
-        root_contents = os.listdir(install_dir)
+        root_contents = list(install_dir.iterdir())
         if len(root_contents) == 1:
-            single_item = os.path.join(install_dir, root_contents[0])
-            if os.path.isdir(single_item):
+            single_item = Path(install_dir / root_contents[0])
+            if single_item.is_dir():
                 logging_function(f"  Flattening {single_item} into {install_dir}...")
-                for item in os.listdir(single_item):
-                    shutil.move(os.path.join(single_item, item), os.path.join(install_dir, item))
+                for item in single_item.iterdir():
+                    shutil.move(Path(single_item / item), Path(install_dir / item))
                 shutil.rmtree(single_item)
-                unpacked_files = [os.path.join(install_dir, f) for f in os.listdir(install_dir)]
+                unpacked_files = [Path(install_dir / f) for f in install_dir.iterdir()]
 
-        try:
-            os.remove(file_to_download)
-            logging_function(f"  Removed archive: {file_to_download}")
-        except Exception as e:
-            logging_function(f"[Error] Failed to remove archive: {e}")
+        file_to_download.unlink()
+        logging_function(f"  Removed archive: {file_to_download}")
     else:
         # Direct file, not archive — just move to install_dir
         for path in tool_info.file_paths:
-            dest = os.path.join(install_dir, os.path.basename(path))
+            dest = Path(install_dir / path.name)
             shutil.copy2(path, dest)
             unpacked_files.append(dest)
 
     # Register in cache
     tool = next(
         (t for t in tools.tool_entries if t.get_repo_name().lower() == tool_info.tool_name.lower()),
-        None
+        None,
     )
 
     if tool is None:
         logging_function(f"Registering new tool '{tool_info.tool_name}' in cache")
         tool = Tool(
             tool_repo_url=f"https://github.com/Tempo-Organization/{tool_info.tool_name}",
-            cache_entries=[]
+            cache_entries=[],
         )
         tools.tool_entries.append(tool)
 
@@ -483,8 +469,8 @@ def install_tool_to_cache(
         release_tag=version_tag,
         installed_files=unpacked_files,
         executable_path=executable_path,
-        file_to_download=file_to_download,
-        download_url=download_url
+        file_to_download=str(file_to_download),
+        download_url=download_url,
     )
 
     tool.cache_entries.append(entry)
@@ -494,7 +480,7 @@ def install_tool_to_cache(
     logging_function(f"  Total files installed: {len(unpacked_files)}")
 
 
-def save_tools_to_toml_file(tools: Tools, filepath: str) -> None:
+def save_tools_to_toml_file(tools: Tools, filepath: Path) -> None:
     doc = document()
     entries = []
 
@@ -517,11 +503,11 @@ def save_tools_to_toml_file(tools: Tools, filepath: str) -> None:
 
     doc["tool_entries"] = entries
 
-    with open(filepath, "w", encoding="utf-8") as f:
+    with Path.open(filepath, "w", encoding="utf-8") as f:
         f.write(dumps(doc))
 
-def load_tools_from_toml_file(filepath: str) -> Tools:
-    with open(filepath, "r", encoding="utf-8") as f:
+def load_tools_from_toml_file(filepath: Path) -> Tools:
+    with Path.open(filepath, "r", encoding="utf-8") as f:
         data: TOMLDocument = loads(f.read())
 
     tool_entries = []
@@ -532,20 +518,20 @@ def load_tools_from_toml_file(filepath: str) -> Tools:
                 installed_files=entry["installed_files"],
                 executable_path=entry["executable_path"],
                 download_url=entry["download_url"],
-                file_to_download=entry["file_to_download"]
+                file_to_download=entry["file_to_download"],
             )
             for entry in tool_data.get("cache_entries", [])
         ]
         tool = Tool(
             tool_repo_url=tool_data["tool_repo_url"],
-            cache_entries=cache_entries
+            cache_entries=cache_entries,
         )
         tool_entries.append(tool)
 
     return Tools(tool_entries=tool_entries)
 
 
-def clean_cache():
+def clean_cache() -> None:
     shutil.rmtree(get_cache_dir())
     init_cache()
 
@@ -554,8 +540,11 @@ def get_tempo_no_cache_env_var_value() -> bool:
     return os.getenv('TEMPO_NO_CACHE', '').lower() in ['1', 'true', 'yes']
 
 
-def get_tempo_cache_dir_env_var_value() -> str | None:
-    return os.getenv('TEMPO_CACHE_DIR')
+def get_tempo_cache_dir_env_var_value() -> Path | None:
+    cache_dir = os.getenv('TEMPO_CACHE_DIR')
+    if cache_dir:
+        return Path(cache_dir)
+    return None
 
 
 def was_no_cache_parameter_in_args() -> bool:
@@ -566,19 +555,19 @@ def was_cache_dir_parameter_in_args() -> bool:
     return '--cache-dir' in sys.argv
 
 
-def get_cache_dir_param_in_args() -> str | None:
+def get_cache_dir_param_in_args() -> Path | None:
     if '--cache-dir' in sys.argv:
         idx = sys.argv.index('--cache-dir')
         if idx + 1 < len(sys.argv):
-            return sys.argv[idx + 1]
+            return Path(sys.argv[idx + 1])
     return None
 
 
-def get_default_cache_dir() -> str:
-    return os.path.normpath(f"{platformdirs.user_cache_dir(appname='tempo', appauthor='Tempo-Organization')}")
+def get_default_cache_dir() -> Path:
+    return Path(platformdirs.user_cache_dir(appname='tempo', appauthor='Tempo-Organization'))
 
 
-def get_cache_dir() -> str:
+def get_cache_dir() -> Path:
     # check .env file here later for the value
     if get_tempo_no_cache_env_var_value() or was_no_cache_parameter_in_args():
         return get_local_cache_dir_path()
@@ -586,38 +575,38 @@ def get_cache_dir() -> str:
     if was_cache_dir_parameter_in_args():
         param_dir = get_cache_dir_param_in_args()
         if param_dir:
-            return os.path.normpath(f"{param_dir}")
+            return Path(param_dir)
 
     env_dir = get_tempo_cache_dir_env_var_value()
     if env_dir:
-        return os.path.normpath(f"{env_dir}")
+        return Path(env_dir)
 
     # check .env file here later for the value
 
     config_dir = get_cache_dir_from_tempo_config_file()
     if config_dir:
-        return os.path.normpath(f"{config_dir}")
+        return Path(config_dir)
 
     return get_default_cache_dir()
 
 
-def get_main_cache_settings_file() -> str:
-    return os.path.normpath(f"{get_cache_dir()}/cache.toml")
+def get_main_cache_settings_file() -> Path:
+    return Path(get_cache_dir() / 'cache.toml')
 
 
-def get_local_cache_dir_path() -> str:
+def get_local_cache_dir_path() -> Path:
     # maybe make the script dir an arg later?
-    return os.path.normpath(f"{SCRIPT_DIR}/tempo_cache")
+    return Path(SCRIPT_DIR / 'tempo_cache')
 
 
 class _UninitializedCache:
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> None:
         raise NotImplementedError("ToolsCache is not initialized. Call init_cache() first.")
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: str) -> None:
         raise NotImplementedError("ToolsCache is not initialized. Call init_cache() first.")
 
-    def __bool__(self):
+    def __bool__(self) -> None:
         raise NotImplementedError("ToolsCache is not initialized. Call init_cache() first.")
 
 
@@ -626,17 +615,19 @@ TempoCache = _UninitializedCache()
 def init_cache() -> None:
     cache_dir = get_cache_dir()
     logging_function(f'cache_directory: "{get_cache_dir()}"')
-    os.makedirs(cache_dir, exist_ok=True)
+    cache_dir.mkdir(parents=True)
     cache = get_main_cache_settings_file()
     logging_function(f'cache_settings_file: "{cache}"')
-    if not os.path.isfile(cache):
-        with open(cache, 'w') as file:
+    if not cache.is_file():
+        with Path.open(cache, 'w') as file:
             file.write('')
     global TempoCache
     TempoCache = load_tools_from_toml_file(cache)
 
 
 def get_tool_entry(tool_name: str) -> Tool | None:
+    if not isinstance(TempoCache, Tools):
+        raise RuntimeError("Cache not initialized")
     for tool in TempoCache.tool_entries:
         if tool.get_repo_name().lower() == tool_name:
             return tool
