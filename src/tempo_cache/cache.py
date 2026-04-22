@@ -615,7 +615,7 @@ TempoCache = _UninitializedCache()
 def init_cache() -> None:
     cache_dir = get_cache_dir()
     logging_function(f'cache_directory: "{get_cache_dir()}"')
-    cache_dir.mkdir(parents=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     cache = get_main_cache_settings_file()
     logging_function(f'cache_settings_file: "{cache}"')
     if not cache.is_file():
