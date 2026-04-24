@@ -416,7 +416,7 @@ def install_tool_to_cache(
 
     # Determine install directory
     install_dir = get_tool_install_dir(tool_info.tool_name, version_tag)
-    install_dir.mkdir(parents=True)
+    install_dir.mkdir(parents=True, exist_ok=True)
 
     # Extract if needed
     unpacked_files = []
