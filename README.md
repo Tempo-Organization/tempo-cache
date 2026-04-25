@@ -1,2 +1,2 @@
 # tempo-binary-tool-manager
-generic reusable cache made mainly for tempo
+generic binary tool manager, mainly for tempo usage
