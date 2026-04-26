@@ -1,5 +1,5 @@
 [project]
-name = "tempo-cache"
+name = "tempo-binary-tool-manager"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tempo-cache = "tempo_cache:main"
+tempo_binary_tool_manager = "tempo_binary_tool_manager:main"
 
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
