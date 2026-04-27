@@ -27,8 +27,23 @@ SCRIPT_DIR = (
     else Path(__file__).resolve().parent
 )
 
-# FIXME
-settings_information: SettingsInformation
+
+def get_github_token() -> str | None:
+    return os.getenv("GITHUB_TOKEN")
+
+
+def github_get(url: str, **kwargs) -> requests.Response: # noqa
+    headers = kwargs.pop("headers", {})
+
+    token = get_github_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    headers["Accept"] = "application/vnd.github+json"
+
+    timeout = kwargs.pop("timeout", 5)  # default once only
+
+    return requests.get(url, headers=headers, timeout=timeout, **kwargs)
 
 
 def is_windows() -> bool:
@@ -132,6 +147,35 @@ class ToolInfo:
     repo_owner: str
     cache: ToolsCache
     file_paths: list[Path] = field(default_factory=list)
+    settings: dict | None = None
+
+
+    def resolve_release_tag(self) -> str:
+        raw = self.get_current_preferred_release_tag()
+
+        if raw != "latest":
+            return raw
+
+        url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases"
+        response = github_get(url)
+        response.raise_for_status()
+
+        releases = response.json()
+
+        if not releases:
+            raise RuntimeError("No releases found for repository")
+
+        # stable first
+        for r in releases:
+            if not r.get("draft") and not r.get("prerelease"):
+                return r["tag_name"]
+
+        # prerelease fallback
+        for r in releases:
+            if not r.get("draft"):
+                return r["tag_name"]
+
+        raise RuntimeError("No valid release found")
 
 
     def ensure_tool_installed(self) -> None:
@@ -149,7 +193,7 @@ class ToolInfo:
 
 
     def get_download_url(self) -> str:
-        return f'https://github.com/{self.repo_owner}/{self.repo_name}/releases/download/{self.get_current_preferred_release_tag()}/{self.get_file_to_download()}'
+        return f'https://github.com/{self.repo_owner}/{self.repo_name}/releases/download/{self.resolve_release_tag()}/{self.get_file_to_download()}'
 
 
     def get_executable_name(self) -> str:
@@ -166,63 +210,44 @@ class ToolInfo:
 
 
     def get_current_preferred_release_tag(self) -> str:
-        global settings_information
         default_value = "latest"
+
         config_value = None
+        if self.settings:
+            config_value = self.settings.get(
+                f'{self.tool_name.lower()}_info',
+                {}
+            ).get(f'{self.tool_name.lower()}_release_tag')
 
-        if settings_information.settings:
-            config_value = settings_information.settings.get(f'{self.tool_name.lower()}_info', {}).get(f'{self.tool_name.lower()}_release_tag')
-
-        env_value = os.environ.get(f'{self.cache.main_tool_name.upper()}_{self.tool_name.upper()}_RELEASE_TAG')
+        env_value = os.environ.get(
+            f'{self.cache.main_tool_name.upper()}_{self.tool_name.upper()}_RELEASE_TAG'
+        )
 
         cli_value = None
-        if f'--{self.tool_name.lower()}-release-tag' in sys.argv:
-            idx = sys.argv.index(f'--{self.tool_name.lower()}-release-tag')
+        flag = f'--{self.tool_name.lower()}-release-tag'
+
+        if flag in sys.argv:
+            idx = sys.argv.index(flag)
             if idx + 1 < len(sys.argv):
                 cli_value = sys.argv[idx + 1]
             else:
-                raise RuntimeError(f'You passed --{self.tool_name.lower()}-release-tag without a tag after it.')
+                raise RuntimeError(f"{flag} passed without value")
 
-        prioritized_value = next(
+        return next(
             v for v in [cli_value, env_value, config_value, default_value]
             if v not in (None, "")
         )
 
-        if not prioritized_value:
-            raise RuntimeError('get tool directory could not find a prioritized value')
-
-        if prioritized_value == "latest":
-            url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
-
-            response = requests.get(url, timeout=5)
-
-            if response.status_code == 404:
-                # fallback: include prereleases
-                fallback_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases"
-                fallback = requests.get(fallback_url, timeout=5)
-                fallback.raise_for_status()
-
-                releases = fallback.json()
-                if not releases:
-                    return "latest"
-
-                return releases[0].get("tag_name", "latest")
-
-            response.raise_for_status()
-            return response.json().get("tag_name", "latest")
-        return prioritized_value
-
 
     def get_tool_directory(self) -> Path:
-        global settings_information
         default_value = self.cache.get_tool_install_dir(
             self.repo_name.lower(),
             self.tool_name.lower(),
-            self.get_current_preferred_release_tag(),
+            self.resolve_release_tag(),
         )
 
         config_value = None
-        if settings_information.settings:
+        if self.settings:
             config_value = settings_information.settings.get(f"{self.tool_name.lower()}_info", {}).get(
                 f"{self.tool_name.lower()}_dir", None,
             )
@@ -249,7 +274,7 @@ class ToolInfo:
             prioritized_value = Path(prioritized_value)
 
         if not prioritized_value.is_absolute():
-            return Path(str(settings_information.settings_json_dir.path), prioritized_value).resolve()
+            return Path(self.settings['settings_json_dir'] / prioritized_value).resolve()
         else:
             return Path(prioritized_value).resolve()
 
@@ -258,7 +283,7 @@ class ToolInfo:
         for tool in self.cache.tools.tool_entries:
             if tool.get_repo_name().lower() == self.repo_name.lower():
                 for entry in tool.cache_entries:
-                    if entry.release_tag == self.get_current_preferred_release_tag():
+                    if entry.release_tag == self.resolve_release_tag():
                         if entry.is_cache_valid():
                             return True
         return False
@@ -362,6 +387,7 @@ class ToolsCache:
 
 
     def clean_download_dir(self) -> None:
+        return
         download_dir = self.get_download_dir()
         for file in download_dir.iterdir():
             if file.is_file():
@@ -427,13 +453,13 @@ class ToolsCache:
         download_dir = self.get_download_dir()
         file_to_download = download_dir / tool_info.get_file_to_download()
         executable_path = tool_info.get_executable_path()
-        version_tag = tool_info.get_current_preferred_release_tag()
+        version_tag = tool_info.resolve_release_tag()
 
         # Download if missing
         # FIXME seems to not give back a full Path and just a str that is not a full path either
         if not file_to_download.is_file():
             self.logging_function(f"Downloading {download_url} to {file_to_download}...")
-            response = requests.get(download_url, stream=True, timeout=15)
+            response = github_get(download_url, stream=True, timeout=15)
             response.raise_for_status()
             with Path.open(file_to_download, "wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
@@ -449,21 +475,29 @@ class ToolsCache:
         if is_archive(file_to_download):
             unpacked_files = unpack_archive(file_to_download, install_dir)
 
-            # this will need to check if the only thing in the zip root is a dir and unfolder it
-            root_contents = list(install_dir.iterdir())
-            if len(root_contents) == 1:
-                single_item = Path(install_dir / root_contents[0])
-                if single_item.is_dir():
-                    self.logging_function(f"  Flattening {single_item} into {install_dir}...")
-                    for item in single_item.iterdir():
-                        shutil.move(Path(single_item / item), Path(install_dir / item))
-                    shutil.rmtree(single_item)
-                    unpacked_files = [Path(install_dir / f) for f in install_dir.iterdir()]
+        root_contents = list(install_dir.iterdir())
+
+        if len(root_contents) == 1 and root_contents[0].is_dir():
+            single_item = root_contents[0]
+
+            self.logging_function(f"  Flattening {single_item} into {install_dir}...")
+
+            unpacked_files = []
+
+            for item in single_item.rglob("*"):
+                if item.is_file():
+                    dest = install_dir / item.relative_to(single_item)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(item), str(dest))
+                    unpacked_files.append(dest)
+
+            shutil.rmtree(single_item)
 
             self.logging_function(f"  Removed archive: {file_to_download}")
         else:
             # Direct file, not archive — just move to install_dir
             for path in tool_info.file_paths:
+                path = self.get_download_dir() / path
                 dest = Path(install_dir / path.name)
                 shutil.copy2(path, dest)
                 unpacked_files.append(dest)
