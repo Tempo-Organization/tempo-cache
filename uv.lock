@@ -173,7 +173,6 @@ source = { editable = "." }
 dependencies = [
     { name = "platformdirs" },
     { name = "requests" },
-    { name = "tempo-settings" },
     { name = "tomlkit" },
 ]
 
@@ -188,7 +187,6 @@ dev = [
 requires-dist = [
     { name = "platformdirs", specifier = ">=4.9.6" },
     { name = "requests", specifier = ">=2.33.1" },
-    { name = "tempo-settings", git = "https://www.github.com/Tempo-Organization/tempo-settings" },
     { name = "tomlkit", specifier = ">=0.14.0" },
 ]
 
@@ -198,11 +196,6 @@ dev = [
     { name = "ruff", specifier = ">=0.15.11" },
     { name = "ty", specifier = ">=0.0.31" },
 ]
-
-[[package]]
-name = "tempo-settings"
-version = "0.1.0"
-source = { git = "https://www.github.com/Tempo-Organization/tempo-settings#0cdabc4e19b3c287c041972eb47d4704becb99dc" }
 
 [[package]]
 name = "tomlkit"

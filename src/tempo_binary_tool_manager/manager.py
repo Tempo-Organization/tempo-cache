@@ -710,11 +710,11 @@ class ToolInfo:
         if self.settings:
             config_value = self.settings.get(
                 f'{self.tool_name.lower()}_info',
-                {}
+                {},
             ).get(f'{self.tool_name.lower()}_release_tag')
 
         env_value = os.environ.get(
-            f'{self.cache.main_tool_name.upper()}_{self.tool_name.upper()}_RELEASE_TAG'
+            f'{self.cache.main_tool_name.upper()}_{self.tool_name.upper()}_RELEASE_TAG',
         )
 
         cli_value = None
