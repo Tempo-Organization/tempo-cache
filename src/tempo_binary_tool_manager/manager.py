@@ -317,6 +317,10 @@ class ToolsCache:
             self.logging_function("  Download complete.")
 
         # Determine install directory
+        if not tool_info.tool_name:
+            raise RuntimeError('No tool name somehow')
+        if not tool_info.repo_name:
+            raise RuntimeError('No repo name somehow')
         install_dir = self.get_tool_install_dir(tool_info.repo_name, tool_info.tool_name, version_tag)
         install_dir.mkdir(parents=True, exist_ok=True)
 
@@ -623,7 +627,7 @@ class ToolsCache:
 class ToolInfo:
     registry = []
 
-    def __init_subclass__(cls, **kwargs) -> None:
+    def __init_subclass__(cls, **kwargs) -> None: #noqa
         super().__init_subclass__(**kwargs)
         ToolInfo.registry.append(cls)
 
@@ -673,6 +677,8 @@ class ToolInfo:
 
 
     def ensure_tool_installed(self) -> None:
+        if not self.cache:
+            raise RuntimeError('No tool cache somehow')
         if not self.is_current_preferred_tool_version_installed():
             self.cache.install_tool_to_cache(self)
 
@@ -704,6 +710,10 @@ class ToolInfo:
 
 
     def get_current_preferred_release_tag(self) -> str:
+        if not self.tool_name:
+            raise RuntimeError('No tool name somehow')
+        if not self.cache:
+            raise RuntimeError('No tool cache somehow')
         default_value = "latest"
 
         config_value = None
@@ -734,6 +744,12 @@ class ToolInfo:
 
 
     def get_tool_directory(self) -> Path:
+        if not self.tool_name:
+            raise RuntimeError('No tool name somehow')
+        if not self.repo_name:
+            raise RuntimeError('No repo name somehow')
+        if not self.cache:
+            raise RuntimeError('No tool cache somehow')
         default_value = self.cache.get_tool_install_dir(
             self.repo_name.lower(),
             self.tool_name.lower(),
@@ -742,7 +758,7 @@ class ToolInfo:
 
         config_value = None
         if self.settings:
-            config_value = settings_information.settings.get(f"{self.tool_name.lower()}_info", {}).get(
+            config_value = self.settings.get(f"{self.tool_name.lower()}_info", {}).get(
                 f"{self.tool_name.lower()}_dir", None,
             )
 
@@ -768,12 +784,18 @@ class ToolInfo:
             prioritized_value = Path(prioritized_value)
 
         if not prioritized_value.is_absolute():
-            return Path(self.settings['settings_json_dir'] / prioritized_value).resolve()
+            if not self.settings:
+                raise RuntimeError('somehow no settings')
+            return Path(self.settings['config_file_dir'] / prioritized_value).resolve()
         else:
             return Path(prioritized_value).resolve()
 
 
     def is_current_preferred_tool_version_installed(self) -> bool:
+        if not self.repo_name:
+            raise RuntimeError('No repo name somehow')
+        if not isinstance(self.cache, ToolsCache):
+             return False
         for tool in self.cache.tools.tool_entries:
             if tool.get_repo_name().lower() == self.repo_name.lower():
                 for entry in tool.cache_entries:
