@@ -452,7 +452,7 @@ class ToolsCache:
         for tool in self.tools.tool_entries:
             self.logging_function(f"- {tool.get_repo_name()} ({tool.tool_repo_url})")
             for entry in tool.cache_entries:
-                self.logging_function(f"  └─ version: {entry.release_tag}")
+                self.logging_function(f"version: {entry.release_tag}")
 
 
     def get_no_cache_env_var_value(self) -> bool:
